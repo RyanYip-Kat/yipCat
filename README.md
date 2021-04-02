@@ -46,5 +46,10 @@ second plot ![Impute](inst/extdata/impute-S100A9_page-0001.jpg)
 
 ### cell-cell interaction  : cellphonedb
 this package also wrap cellphonedb ,you can choose relative functions to realize what you want
-
+for example
+```r
+exportCellPhoneDB(seurat,cells=cells,features=features,selectCol="label_fine",runCPDB=TRUE)  # selectCol : which column to caculate cell-cell interaction,runCPDB=TRUE,run cellphonedb backgroup
+CPDBDotplot  #  cellphonedb result dotplot
+CPDBHeatmaps  # cellphonedb result heatmap
+```
 cellphonedb plot ![cellphonedb](inst/extdata/cpbdDotplot_page-0001.jpg)
