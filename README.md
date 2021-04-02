@@ -10,3 +10,12 @@ you can install this package via command:
 ```r
 install.packages("yipCat_1.0.1.tar.gz")
 ```
+
+### requirement
+```r
+require(Seurat)
+require(dplyr)
+require(ggplot2)
+require(...)
+...
+```
