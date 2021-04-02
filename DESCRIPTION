@@ -1,0 +1,11 @@
+Package: yipCat
+Type: Package
+Title: Some function like  ArchR style in Seurat Object 
+Version: 1.0.1
+Author: RyanYip
+Maintainer: The package maintainer <ryanyip_@hotmail.com>
+Description: Some useful functional tools for Seurat object,add cytof and Add style like ArchR
+License: GPL-3
+Encoding: UTF-8
+LazyData: true
+RoxygenNote: 7.1.1
