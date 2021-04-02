@@ -68,5 +68,6 @@ This package can realize the processing of cytof data, the cytof data is sampled
 and then processed into Seurat Object, can achieve umap, tsne, pca and other de-dimensional, cytof visualization, 
 and can be used with the impute weight method;In addition, cytof data can be interacted with cellranger to generate close files for easy cell classification by researchers
 ```r
-
+sample_csv<-
+seurat<-Cytof2Seurat(sample_csv=sample_csv,config_csv=config_csv,N=20000,path2barcode10X="3M-february-2018.txt")
 ```
