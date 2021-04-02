@@ -16,6 +16,10 @@ install.packages("yipCat_1.0.1.tar.gz")
 require(Seurat)
 require(dplyr)
 require(ggplot2)
-require(...)
+require(S4Vectors)
+require(nabor)
 ...
 ```
+
+### trajectory 
+#### 
