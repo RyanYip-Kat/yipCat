@@ -42,3 +42,9 @@ EmbPlot(seurat,colorBy="matrix",features="S100A9",embedding="umap",imputeWeights
 ```
 first plot  ![notImpute](inst/extdata/notImpute-S100A9_page-0001.jpg)  
 second plot ![Impute](inst/extdata/impute-S100A9_page-0001.jpg) 
+
+
+### cell-cell interaction  : cellphonedb
+this package also wrap cellphonedb ,you can choose relative functions to realize what you want
+
+cellphonedb plot ![cellphonedb](inst/extdata/cpbdDotplot_page-0001.jpg)
