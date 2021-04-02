@@ -78,3 +78,7 @@ then run shell script to convert matrix into relative gzip 10X matrix
 ```bash
 bash inst/extdata/cytofTo10x.sh filtered_feature_bc_matrix
 ```
+and,can run cellrnager reanalysis via
+```r
+generateCloupe(...)
+```
