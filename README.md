@@ -22,4 +22,4 @@ require(nabor)
 ```
 
 ### trajectory 
-#### 
+#### The implementation of spline trajectory, the specific method description mainly draws on part of the ArchR method, the diagram is as follows：
