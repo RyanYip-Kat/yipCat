@@ -4,3 +4,8 @@ YipCat package can realize some of the more commonly used analysis requirements 
 heatmap, cell interaction, imputeweight etc**. , you can view the function description inside the package.
 Mainly the implementation style of the diagram is more advanced to look at, in particular, the **mass spectrometry streaming data** is also integrated and 
 can achieve the interaction of **cellranger cloupe files**, very convenient.
+
+### Installtation
+```r
+install.packages("yipCat_1.0.1.tar.gz")
+```
