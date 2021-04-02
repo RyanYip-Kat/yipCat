@@ -53,3 +53,20 @@ CPDBDotplot  #  cellphonedb result dotplot
 CPDBHeatmaps  # cellphonedb result heatmap
 ```
 cellphonedb plot ![cellphonedb](inst/extdata/cpbdDotplot_page-0001.jpg)
+
+### calculate DoubletScores
+For each sample in the SeuratObject provided, this function will independently assign inferred doublet information to each cell.
+This allows for removing strong heterotypic doublet-based clusters downstream. A doublet results from a droplet that contained two cells, causing the ATAC-seq or scRNA data to be a mixture of the signal from each cell.
+```r
+seurat<-calDoubletScores(seurat,sampleCol="Sample",threads=8) #  caculate doublet score
+scoreDF<-filterDoublets(seurat)  # get doublet score data frame
+```
+![](inst/extdata/doublet.jpg)
+
+### Cytof data 
+This package can realize the processing of cytof data, the cytof data is sampled by sample, the default is 20,000 samples,
+and then processed into Seurat Object, can achieve umap, tsne, pca and other de-dimensional, cytof visualization, 
+and can be used with the impute weight method;In addition, cytof data can be interacted with cellranger to generate close files for easy cell classification by researchers
+```r
+
+```
