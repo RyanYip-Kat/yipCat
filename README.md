@@ -23,4 +23,8 @@ require(nabor)
 
 ### trajectory 
 #### The implementation of spline trajectory, the specific method description mainly draws on part of the ArchR method, the diagram is as follows：
-![](inst/extdata/testTrajectoyHeatmap_page-0001.jpg)
+you can caculate trajecory by follwing commands,for example
+```r
+seurat<-addSeuratTrajectory(object=seurat,trajectory=c(),groupBy="label_fine",embedding="pca")
+```
+![trajectory](inst/extdata/testTrajectoyHeatmap_page-0001.jpg)
