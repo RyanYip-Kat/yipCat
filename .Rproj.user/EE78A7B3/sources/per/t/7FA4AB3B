@@ -1,0 +1,27 @@
+{
+    "id": "7FA4AB3B",
+    "path": "E:/Rscripts/MyPackages/yipCat/R/cellranger.R",
+    "project_path": "R/cellranger.R",
+    "type": "r_source",
+    "hash": "721974143",
+    "contents": "",
+    "dirty": false,
+    "created": 1617347629186.0,
+    "source_on_save": false,
+    "relative_order": 3,
+    "properties": {
+        "tempName": "Untitled1",
+        "source_window_id": "",
+        "Source": "Source",
+        "cursorPosition": "106,28",
+        "scrollLine": "80"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1617350154,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1617350154527,
+    "read_only": false,
+    "read_only_alternatives": []
+}
