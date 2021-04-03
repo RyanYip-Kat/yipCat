@@ -155,7 +155,8 @@ calDoubletScores <- function(
   si <- Samples[i]
   cell<-rownames(MetaData)[MetaData[[sampleCol]]==si]
   proj<-subset(object,cells=cell)
-  sampleName <- paste0("sample-",as.character(i))
+  #sampleName <- paste0("sample-",as.character(i))
+  sampleName<-si
   outDir <- file.path(outDir, sampleName)
   if(!dir.exists(outDir)){
     dir.create(outDir,recursive = T,showWarnings = T)
