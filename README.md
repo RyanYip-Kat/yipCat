@@ -53,7 +53,12 @@ CPDBDotplot  #  cellphonedb result dotplot
 CPDBHeatmaps  # cellphonedb result heatmap
 ```
 cellphonedb plot ![cellphonedb](inst/extdata/cpbdDotplot_page-0001.jpg)
-
+###  custom interaction
+*CustomInteractionScore* function can caculate custom cell-cell interaction
+```r
+interaction_csv<-system.file("extdata", "interaction.csv", package = "yipCat")
+df<-CustomInteractionScore(seurat,column=column,idents=c("DC","NK","BC"),interaction_csv=interaction_csv)
+```
 ### calculate DoubletScores
 For each sample in the SeuratObject provided, this function will independently assign inferred doublet information to each cell.
 This allows for removing strong heterotypic doublet-based clusters downstream. A doublet results from a droplet that contained two cells, causing the ATAC-seq or scRNA data to be a mixture of the signal from each cell.
