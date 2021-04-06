@@ -87,6 +87,9 @@ and,can run cellrnager reanalysis via
 ```r
 generateCloupe(...)
 ```
+
+### metascape GO result Barplot
+![](./metascapeBarplot.png)
 For additional usage, check out the package's function description
 ### Issues using yipCat?
 If this does not fix your problem, please [report an issue on Github](https://github.com/RyanYip-Kat/yipCat/issues) with the __Bug Report__ form.
