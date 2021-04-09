@@ -1,0 +1,724 @@
+##########################################################################################
+# Doublet Identification Methods
+##########################################################################################
+
+#' Add Doublet Scores to  an SeuratObject
+#'
+#' For each sample in the SeuratObject provided, this function will independently assign inferred doublet information
+#' to each cell. This allows for removing strong heterotypic doublet-based clusters downstream. A doublet results from a droplet that
+#' contained two cells, causing the ATAC-seq data to be a mixture of the signal from each cell.
+#'
+#' @param input n `SeuratObject` object to be used.
+#' @param useMatrix The name of the matrix to be used for performing doublet identification analyses. Options include "TileMatrix" and "PeakMatrix".
+#' @param k The number of cells neighboring a simulated doublet to be considered as putative doublets.
+#' @param nTrials The number of times to simulate nCell (number of cells in the sample) doublets to use for doublet simulation when calculating doublet scores.
+#' @param dimsToUse A vector containing the dimensions from the `reducedDims` object to use in clustering.
+#' @param LSIMethod A number or string indicating the order of operations in the TF-IDF normalization.
+#' Possible values are: 1 or "tf-logidf", 2 or "log(tf-idf)", and 3 or "logtf-logidf".
+#' @param scaleDims A boolean that indicates whether to z-score the reduced dimensions for each cell during the LSI
+#' method performed for doublet determination. This is useful for minimizing the contribution of strong biases (dominating early PCs)
+#' and lowly abundant populations. However, this may lead to stronger sample-specific biases since it is over-weighting latent PCs.
+#' @param corCutOff A numeric cutoff for the correlation of each dimension to the sequencing depth. If the dimension has a correlation
+#' to sequencing depth that is greater than the `corCutOff`, it will be excluded from analysis.
+#' @param knnMethod The name of the dimensionality reduction method to be used for k-nearest neighbors calculation. Possible values are "UMAP" or "LSI".
+#' @param UMAPParams The list of parameters to pass to the UMAP function if "UMAP" is designated to `knnMethod`. See the function `umap` in the uwot package.
+#' @param LSIParams The list of parameters to pass to the `IterativeLSI()` function. See `IterativeLSI()`.
+#' @param outDir The relative path to the output directory for relevant plots/results from doublet identification.
+#' @param threads The number of threads to be used for parallel computing.
+#' @param force If the UMAP projection is not accurate (when R < 0.8 for the reprojection of the training data - this occurs when you
+#' have a very homogenous population of cells), setting `force=FALSE` will return -1 for all doubletScores and doubletEnrichments. If you would like to
+#' override this (not recommended!), you can bypass this warning by setting `force=TRUE`.
+#' @param parallelParam A list of parameters to be passed for biocparallel/batchtools parallel computing.
+#' @param verbose A boolean value that determines whether standard output is printed.
+#' @export
+calDoubletScores <- function(
+  object = NULL,
+  sampleCol=NULL,
+  slot = "counts",
+  k = 10,
+  nTrials = 5,
+  dimsToUse = 1:30,
+  LSIMethod = 1,
+  scaleDims = FALSE,
+  corCutOff = 0.75,
+  binarize=TRUE,
+  knnMethod = "UMAP",
+  UMAPParams = list(n_neighbors = 40, min_dist = 0.4, metric = "euclidean", verbose = FALSE),
+  LSIParams = list(outlierQuantiles = NULL, filterBias = FALSE),
+  outDir = "DoubletScore",
+  threads = 1,
+  force = FALSE,
+  prefix="",
+  parallelParam = NULL,
+  verbose = TRUE
+){
+
+
+  require(stringr)
+  if(!tolower(slot)%in%c("counts","data")){
+    stop(sprintf("Supported Matrix Names at the moment are counts and data: ",slot))
+  }
+
+  stopifnot(class(object)=="Seurat")
+  MetaData<-object@meta.data
+  barcodes<-rownames(MetaData)
+  if(is.null(sampleCol)){
+    idt<-as.character(unlist(lapply(barcodes,function(x)return(str_split(x,"-")[[1]][2]))))
+    MetaData$Sample<-idt
+    col<-"Sample"
+    object[[col]]<-idt
+  }else{
+    col<-sampleCol
+  }
+
+  Samples<-unique(MetaData[[col]])
+  allCells <- colnames(object)
+
+  #Add args to list
+  args <- list()
+  args$object <- object
+  args$sampleCol<- col
+
+  args$allCells <- allCells
+  args$X <- seq_along(Samples)
+  args$slot<-slot
+  args$FUN <- .addDoubScores
+  args$dimsToUse<-dimsToUse
+  args$UMAPParams<-UMAPParams
+  args$knnMethod <- knnMethod
+  args$threads<-threads
+  args$binarize <- binarize
+  args$parallelParam <- parallelParam
+  args$scaleDims <- scaleDims
+  args$prefix <- prefix
+  args$registryDir <- file.path(outDir, "AddDoubletsRegistry")
+
+  #Make Sure these Args are NULL
+
+  #Run With Parallel or lapply
+  outList <- .batchlapply(args, sequential = TRUE)
+  names(outList) <- Samples
+
+
+
+  #Return Output
+  if(inherits(object, "Seurat")){
+
+    object@meta.data[,"DoubletScore"] <- NA
+    object@meta.data[,"DoubletEnrichment"] <- NA
+
+    for(i in seq_along(outList)){
+      object@meta.data[names(outList[[i]]$doubletScore), "DoubletScore"] <- outList[[i]]$doubletScore
+      object@meta.data[names(outList[[i]]$doubletEnrich), "DoubletEnrichment"] <- outList[[i]]$doubletEnrich
+    }
+
+    return(object)
+
+  }else{
+
+    return(outList)
+
+  }
+
+}
+
+.addDoubScores <- function(
+  i = NULL,
+  object = NULL,
+  sampleCol=NULL,
+  slot="counts",
+  allCells = NULL,
+  UMAPParams = list(),
+  nTrials = 5,
+  dimsToUse = 1:30,
+  corCutOff = 0.75,
+  sampleCells = NULL,
+  scaleDims = FALSE,
+  k = 10,
+  binarize=TRUE,
+  nSample = 1000,
+  knnMethod = "UMAP",
+  outDir = "QualityControl",
+  force = FALSE,
+  prefix="",
+  subThreads = 1,
+  verbose = TRUE
+){
+
+  require(stringr)
+  require(Seurat)
+  require(ggplot2)
+  require(S4Vectors)
+
+  MetaData<-object@meta.data
+  Samples<-unique(MetaData[[sampleCol]])
+  si <- Samples[i]
+  cell<-rownames(MetaData)[MetaData[[sampleCol]]==si]
+  proj<-subset(object,cells=cell)
+  sampleName <- si
+  outDir <- file.path(outDir, sampleName)
+  if(!dir.exists(outDir)){
+    dir.create(outDir,recursive = T,showWarnings = T)
+  }
+  cat(sprintf("--------------------------\n"))
+  cat(sprintf("INFO : Sample [ %s ] -----\n",as.character(si)))
+  cat(sprintf("--------------------------\n"))
+  #################################################
+  tmpDir <- .tempfile()
+  dir.create(tmpDir)
+
+  if(!is.null(allCells)){
+    proj <- subset(proj,cells=Cells(proj)[Cells(proj)%in% allCells])
+  }
+
+  mat <- tryCatch({
+    GetAssayData(proj,slot = slot)
+  }, error = function(e){
+    message("Invalid slot!")
+  })
+  cellNames <- colnames(proj)
+
+  message("compute LSI")
+  LSI<-.computeLSI(mat,binarize=binarize)
+  LSIDims <- seq_len(ncol(LSI[[1]]))
+  if(length(LSIDims) < 2){
+    stop("Reduced LSI Dims below 2 dimensions, please increase dimsToUse or increase corCutOff!")
+  }
+
+  #################################################
+  # 4. Run UMAP for ReducedDims
+  #################################################
+  message("run umap..")
+  set.seed(1) # Always do this prior to UMAP
+  UMAPParams <- .mergeParams(UMAPParams, list(n_neighbors = 40, min_dist = 0.4, metric="euclidean", verbose=FALSE))
+  UMAPParams$X <- LSI$matSVD
+  UMAPParams$ret_nn <- TRUE
+  UMAPParams$ret_model <- TRUE
+  UMAPParams$n_threads <- subThreads
+  uwotUmap <- tryCatch({
+    do.call(uwot::umap, UMAPParams)
+  }, error = function(e){
+    message("Run UMAP on LSI Error\n")
+  })
+
+  #################################################
+  # 5. Simulate and Project Doublets
+  #################################################
+  message("Simulate and Project Doublets")
+  simDoubletsSave <-
+    .simulateProjectDoublets(
+      mat = mat,
+      LSI = LSI,
+      sampleRatio1 = c(1/2),
+      sampleRatio2 = c(1/2),
+      nTrials = nTrials * max( floor(ncol(proj) / nSample), 1 ),
+      nSample = nSample,
+      k = k,
+      scaleDims=scaleDims,
+      uwotUmap = uwotUmap,
+      seed = 1,
+      threads = subThreads,
+      prefix = prefix
+    )
+  #print(str(simDoubletsSave))
+  if(tolower(knnMethod)=="lsi"){
+    simDoublets <- SimpleList(
+      doubletUMAP=simDoubletsSave$doubletUMAP,
+      doubletScore=simDoubletsSave$doubletScoreLSI,
+      doubletEnrich=simDoubletsSave$doubletEnrichLSI
+    )
+  }else{
+    simDoublets <- SimpleList(
+      doubletUMAP=simDoubletsSave$doubletUMAP,
+      doubletScore=simDoubletsSave$doubletScoreUMAP,
+      doubletEnrich=simDoubletsSave$doubletEnrichUMAP
+    )
+  }
+
+
+  #################################################
+  # 6. Plot / Save Results
+  #################################################
+
+  pal <- c("grey", "#FB8861FF", "#B63679FF", "#51127CFF", "#000004FF") #grey_magma
+
+  #Create Plot DF
+  df <- data.frame(row.names = rownames(LSI$matSVD), uwotUmap[[1]], type = "experiment")
+  df[,"score"] <- 0
+  df[,"enrichment"] <- 0
+  df[names(simDoublets$doubletScore),"score"] <- simDoublets$doubletScore
+  df[names(simDoublets$doubletScore),"enrichment"] <- simDoublets$doubletEnrich
+
+  doubUMAP <- simDoublets$doubletUMAP
+  dfDoub <- data.frame(
+    row.names = paste0("doublet_", seq_len(nrow(doubUMAP))),
+    .getDensity(doubUMAP[,1], doubUMAP[,2]),
+    type = "simulated_doublet"
+  )
+  dfDoub <- dfDoub[order(dfDoub$density), , drop = FALSE]
+  dfDoub$color <- dfDoub$density
+
+  ##################################
+  #Save Results
+
+  summaryList <- SimpleList(
+    originalDataUMAP = df,
+    simulatedDoubletUMAP = dfDoub,
+    doubletResults = simDoubletsSave
+  )
+
+  .safeSaveRDS(summaryList, file.path(outDir, paste0(sampleName, "-Doublet-Summary.rds")))
+  rm(simDoubletsSave)
+  ##################################
+
+  tmpFile <- .tempfile()
+
+
+
+  #Plot Doublet Summary
+  pdf(file.path(outDir, paste0(sampleName, "-Doublet-Summary.pdf")), width = 6, height = 6)
+
+  #Plot Doublet Density
+  xlim <- range(df$X1) %>% extendrange(f = 0.05)
+  ylim <- range(df$X2) %>% extendrange(f = 0.05)
+
+  pdensity <- ggplot() +
+    .geom_point_rast2(data = df, aes(x=X1,y=X2),color="lightgrey", size = 0.5) +
+    .geom_point_rast2(data = dfDoub, aes(x=x,y=y,colour=color), size = 0.5) +
+    scale_colour_gradientn(colors = pal) +
+    xlab("UMAP Dimension 1") + ylab("UMAP Dimension 2") +
+    labs(color = "Simulated Doublet Density") +
+    guides(fill = FALSE) + theme_ArchR(baseSize = 10) +
+    theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(),
+          axis.text.y = element_blank(), axis.ticks.y = element_blank()) +
+    coord_equal(ratio = diff(xlim)/diff(ylim), xlim = xlim, ylim = ylim, expand = FALSE) +
+    ggtitle("Simulated and LSI-Projected Density Overlayed") + theme(legend.direction = "horizontal",
+                                                                     legend.box.background = element_rect(color = NA))
+
+  #Plot Doublet Score
+  pscore <- ggPoint(
+    x = df[,1],
+    y = df[,2],
+    color = quantileCut(df$score, 0, 0.95),
+    xlim = xlim,
+    ylim = ylim,
+    discrete = FALSE,
+    size = 0.5,
+    xlab = "UMAP Dimension 1",
+    ylab = "UMAP Dimension 2",
+    pal = pal,
+    title = "Doublet Scores -log10(P-adj.)",
+    colorTitle = "Doublet Scores -log10(P-adj.)",
+    rastr = TRUE,
+    baseSize = 10
+  ) + theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(),
+            axis.text.y = element_blank(), axis.ticks.y = element_blank())
+
+  #Plot Enrichment Summary
+  penrich <- ggPoint(
+    x = df[,1],
+    y = df[,2],
+    color = quantileCut(df$enrichment, 0, 0.95),
+    xlim = xlim,
+    ylim = ylim,
+    discrete = FALSE,
+    size = 0.5,
+    xlab = "UMAP Dimension 1",
+    ylab = "UMAP Dimension 2",
+    pal = pal,
+    title = "Simulated Doublet Enrichment over Expectation",
+    colorTitle = "Doublet Enrichment",
+    rastr = TRUE,
+    baseSize = 10
+  ) + theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(),
+            axis.text.y = element_blank(), axis.ticks.y = element_blank())
+
+
+  #1. Doublet Enrichment
+  fixPlotSize(penrich, plotWidth = 6, plotHeight = 6)
+  grid::grid.newpage()
+
+  #2. Doublet Scores
+  fixPlotSize(pscore, plotWidth = 6, plotHeight = 6)
+  grid::grid.newpage()
+
+  #3. Doublet Density
+  fixPlotSize(pdensity, plotWidth = 6, plotHeight = 6)
+
+  dev.off()
+
+
+
+  out <- SimpleList(doubletScore = simDoublets$doubletScore, doubletEnrich = simDoublets$doubletEnrich)
+
+  return(out)
+
+}
+
+.simulateProjectDoublets <- function(
+  mat = NULL,
+  LSI = NULL,
+  uwotUmap = NULL,
+  sampleRatio1 = c(0.5),
+  sampleRatio2 = c(0.5),
+  nTrials = 100,
+  nSample = 1000,
+  k = 200,
+  scaleDims=TRUE,
+  knnMethod = "UMAP",
+  seed = 1,
+  threads = 1,
+  prefix = ""
+){
+  require(S4Vectors)
+  require(dplyr)
+  .sampleSparseMat <- function(mat = NULL, sampleRatio = 0.5){
+    total <- length(mat@x)
+    sampleTo <- floor(total * (1-sampleRatio))
+    mat@x[sample(seq_len(total), sampleTo)] <- 0
+    mat <- drop0(mat)
+    mat
+  }
+
+  set.seed(seed)
+  simLSI <- tryCatch({
+    .safelapply(seq_len(nTrials), function(y){
+      if(y %% 5 == 0){
+        gc()
+      }
+      lapply(seq_along(sampleRatio1), function(x){
+        idx1 <- sample(seq_len(ncol(mat)), nSample, replace = TRUE)
+        idx2 <- sample(seq_len(ncol(mat)), nSample, replace = TRUE)
+        #Simulated Doublet
+        simulatedMat <- .sampleSparseMat(mat = mat[,idx1], sampleRatio = sampleRatio1[x]) +
+          .sampleSparseMat(mat = mat[,idx2], sampleRatio = sampleRatio2[x])
+        #Project LSI
+        lsiProject <- suppressMessages(.projectLSI(simulatedMat, LSI))
+        rownames(lsiProject) <- NULL
+        lsiProject
+      }) %>% Reduce("rbind", .)
+    }, threads = threads) %>% Reduce("rbind", .)
+
+  }, error = function(e){
+    message("Simulate LSI Project Doublets Error!")
+  })
+
+
+  #Compute original
+  ogLSI <- suppressMessages(.projectLSI(mat, LSI))
+
+  #Merge
+  #allLSI <- rbind(simLSI[, LSI$dimsKept, drop = FALSE], ogLSI[, LSI$dimsKept, drop = FALSE])
+  allLSI <- rbind(simLSI, ogLSI)
+  nSimLSI <- nrow(simLSI)
+  if(nSimLSI==0){
+    stop("Simulations must be greater than 0! Please adjust nTrials!")
+  }
+  rm(simLSI)
+  rm(ogLSI)
+  gc()
+
+  if(scaleDims){
+    allLSI <- .scaleDims(allLSI)
+  }
+
+  #Project UMAP
+  message("Project UMAp")
+  set.seed(1) # Always do this prior to UMAP
+  umapProject <- tryCatch({
+    uwot::umap_transform(
+      X = as.matrix(allLSI),
+      model = uwotUmap,
+      verbose = FALSE,
+      n_threads = threads
+    )
+  }, error = function(e){
+    errorList <- list(X = allLSI, model = uwotUmap)
+  })
+  message("corProjection")
+  corProjection <- list(
+    LSI = unlist(lapply(seq_len(ncol(allLSI)), function(x) cor(allLSI[-seq_len(nSimLSI), x], LSI$matSVD[, x]) )),
+    UMAP =  c(
+      dim1 = cor(uwotUmap[[1]][,1], umapProject[-seq_len(nSimLSI), 1]),
+      dim2 = cor(uwotUmap[[1]][,2], umapProject[-seq_len(nSimLSI), 2])
+    )
+  )
+  #names(corProjection[[1]]) <- paste0("SVD", LSI$dimsKept)
+
+
+  msg <- paste0(prefix, "UMAP Projection R^2 = ", round(mean(corProjection[[2]])^2, 5))
+  message(msg)
+
+  out <- SimpleList(
+    doubletUMAP = umapProject[seq_len(nSimLSI), ],
+    projectionCorrelation = corProjection
+  )
+
+
+  ##############################################################################
+  # Compute Doublet Scores from LSI (TF-IDF + SVD)
+  ##############################################################################
+
+
+  knnDoub <- .computeKNN(allLSI[-seq_len(nSimLSI),], allLSI[seq_len(nSimLSI),], k)
+
+  #Compile KNN Sums
+  countKnn <- rep(0, nrow(LSI$matSVD))
+  names(countKnn) <- rownames(LSI$matSVD)
+
+  tabDoub <- table(as.vector(knnDoub))
+  countKnn[as.integer(names(tabDoub))] <-  countKnn[as.integer(names(tabDoub))] + tabDoub
+
+  nSim <- nrow(LSI$matSVD)
+  scaleTo <- 10000
+  scaleBy <- scaleTo / nSim
+
+  #P-Values
+  pvalBinomDoub <- lapply(seq_along(countKnn), function(x){
+    #Round Prediction
+    countKnnx <- round(countKnn[x] * scaleBy)
+    sumKnnx <- round(sum(countKnn) * scaleBy)
+    pbinom(countKnnx - 1, sumKnnx, 1 / scaleTo, lower.tail = FALSE)
+  }) %>% unlist
+
+  #Adjust
+  padjBinomDoub <- p.adjust(pvalBinomDoub, method = "bonferroni")
+
+  #Convert To Scores
+  doubletScore <- -log10(pmax(padjBinomDoub, 4.940656e-324))
+  doubletEnrich <- (countKnn / sum(countKnn)) / (1 / nrow(LSI$matSVD))
+  doubletEnrich <- 10000 * doubletEnrich / length(countKnn) #Enrichment Per 10000 Cells in Data Set
+
+  #Store Results
+  out$doubletEnrichLSI <- doubletEnrich
+  out$doubletScoreLSI <- doubletScore
+
+  ##############################################################################
+  # Compute Doublet Scores from LSI (TF-IDF + SVD) + UMAP Embedding
+  ##############################################################################
+  knnDoub <- .computeKNN(umapProject[-seq_len(nSimLSI),], umapProject[seq_len(nSimLSI),], k)
+
+  #Compile KNN Sums
+  countKnn <- rep(0, nrow(LSI$matSVD))
+  names(countKnn) <- rownames(LSI$matSVD)
+
+  tabDoub <- table(as.vector(knnDoub))
+  countKnn[as.integer(names(tabDoub))] <-  countKnn[as.integer(names(tabDoub))] + tabDoub
+
+  nSim <- nrow(LSI$matSVD)
+  scaleTo <- 10000
+  scaleBy <- scaleTo / nSim
+
+  #P-Values
+  pvalBinomDoub <- lapply(seq_along(countKnn), function(x){
+    #Round Prediction
+    countKnnx <- round(countKnn[x] * scaleBy)
+    sumKnnx <- round(sum(countKnn) * scaleBy)
+    pbinom(countKnnx - 1, sumKnnx, 1 / scaleTo, lower.tail = FALSE)
+  }) %>% unlist
+
+  #Adjust
+  padjBinomDoub <- p.adjust(pvalBinomDoub, method = "bonferroni")
+
+  #Convert To Scores
+  doubletScore <- -log10(pmax(padjBinomDoub, 4.940656e-324))
+  doubletEnrich <- (countKnn / sum(countKnn)) / (1 / nrow(LSI$matSVD))
+  doubletEnrich <- 10000 * doubletEnrich / length(countKnn) #Enrichment Per 10000 Cells in Data Set
+
+  #Store Results
+  out$doubletEnrichUMAP <- doubletEnrich
+  out$doubletScoreUMAP <- doubletScore
+
+  return(out)
+}
+
+#' compute KNN
+#' @export
+.computeKNN<-function (data = NULL, query = NULL, k = 50, includeSelf = FALSE,
+                       ...)
+{
+  if (is.null(query)) {
+    query <- data
+    searchSelf <- TRUE
+  }
+  else {
+    searchSelf <- FALSE
+  }
+  require(nabor)
+  if (searchSelf & !includeSelf) {
+    knnIdx <- nabor::knn(data = data, query = query, k = k +
+                           1, ...)$nn.idx
+    knnIdx <- knnIdx[, -1, drop = FALSE]
+  }
+  else {
+    knnIdx <- nabor::knn(data = data, query = query, k = k,
+                         ...)$nn.idx
+  }
+  knnIdx
+}
+
+.safeSaveRDS<-function (object = NULL, file = "", ascii = FALSE, version = NULL,
+                        compress = TRUE, refhook = NULL)
+{
+  testDF <- data.frame(a = 1, b = 2)
+  canSave <- suppressWarnings(tryCatch({
+    saveRDS(object = testDF, file = file, ascii = ascii,
+            version = version, compress = compress, refhook = refhook)
+    TRUE
+  }, error = function(x) {
+    FALSE
+  }))
+  if (!canSave) {
+    dirExists <- dir.exists(dirname(file))
+    if (dirExists) {
+      stop("Cannot saveRDS. File Path : ", file)
+    }
+    else {
+      stop("Cannot saveRDS because directory does not exist (",
+           dirname(file), "). File Path : ", file)
+    }
+  }
+  else {
+    saveRDS(object = object, file = file, ascii = ascii,
+            version = version, compress = compress, refhook = refhook)
+  }
+}
+
+#' batch lapply paralle
+#' @export
+.batchlapply<-function (args = NULL, sequential = FALSE)
+{
+
+  require(BiocParallel)
+  if (inherits(args$parallelParam, "BatchtoolsParam")) {
+    require(BiocParallel)
+    args$parallelParam <- btParam
+    if (dir.exists(args$registryDir)) {
+      unlink(args$registryDir, recursive = TRUE)
+    }
+    args$parallelParam$registryargs <- batchtoolsRegistryargs(file.dir = args$registryDir,
+                                                              work.dir = getwd(), packages = character(0L), namespaces = character(0L),
+                                                              source = character(0L), load = character(0L))
+    BPPARAM <- args$parallelParam
+    register(BPPARAM)
+    args$BPPARAM <- BPPARAM
+    if ("..." %in% names(args)) {
+      args["..."] <- NULL
+    }
+    args <- args[!names(args) %in% c("threads", "parallelParam",
+                                    "subThreading")]
+    outlist <- do.call(bplapply, args)
+  }
+  else {
+    message("Batch Execution w/ safelapply!")
+    if (sequential) {
+      args$subThreads <- args$threads
+      args$threads <- 1
+    }
+    else {
+      if (args$threads > length(args$X)) {
+        args$subThreads <- floor(args$threads/length(args$X))
+        args$threads <- length(args$X)
+      }
+      else {
+        args$subThreads <- 1
+      }
+    }
+    args <- args[!names(args) %in% c("registryDir", "parallelParam",
+                                    "subThreading")]
+    outlist <- do.call(.safelapply, args)
+  }
+  return(outlist)
+}
+
+
+.scaleDims<-function (x, scaleMax = NULL)
+{
+  if (!is.null(scaleMax)) {
+    .rowZscores(m = x, min = -scaleMax, max = scaleMax, limit = TRUE)
+  }
+  else {
+    .rowZscores(m = x)
+  }
+}
+
+.rowZscores<-function (m = NULL, min = -2, max = 2, limit = FALSE)
+{
+  z <- sweep(m - rowMeans(m), 1, matrixStats::rowSds(m), `/`)
+  if (limit) {
+    z[z > max] <- max
+    z[z < min] <- min
+  }
+  return(z)
+}
+
+
+#' function to filter doublet cells
+#' @param object a Seurat Object.
+#' @param sampleCol which column in metadata as Sample
+#' @param cutEnrich DoubletEnrichment value to cutoff
+#' @param cutScore DoubletScore value to cutoff
+#' @export
+getDoubletsDF<-function (object= NULL,
+                          sampleCol=NULL,
+                          cutEnrich = 1,
+                          cutScore = -Inf,
+                          filterRatio = 1)
+{
+
+  require(Seurat)
+  require(stringr)
+  metaData <- object@meta.data
+
+  if(is.null(sampleCol)){
+    idt<-as.character(unlist(lapply(barcodes,function(x)return(str_split(x,"-")[[1]][2]))))
+    MetaData$Sample<-idt
+    sampleCol<-"Sample"
+  }
+  df<- metaData[,c(sampleCol,"DoubletEnrichment","DoubletScore")]
+  colnames(df) <- c("Sample", "DoubletEnrichment","DoubletScore")
+
+  splitDF <- split(seq_len(nrow(df)), as.character(df$Sample))
+  cellsFilter <- lapply(splitDF, function(y) {
+    x <- df[y, , drop = FALSE]
+    n <- nrow(x)
+    x <- x[order(x$DoubletEnrichment, decreasing = TRUE),
+    ]
+    if (!is.null(cutEnrich)) {
+      x <- x[which(x$DoubletEnrichment >= cutEnrich), ]
+    }
+    if (!is.null(cutScore)) {
+      x <- x[which(x$DoubletScore >= cutScore), ]
+    }
+    if (nrow(x) > 0) {
+      head(rownames(x), filterRatio * n * (n/1e+05))
+    }
+    else {
+      NULL
+    }
+  }) %>% unlist(use.names = FALSE)
+  message("Filtering ", length(cellsFilter), " cells from Seurat object!")
+  tabRemove <- table(df[cellsFilter, ]$Sample)
+  tabAll <- table(df$Sample)
+  samples <- unique(df$Sample)
+  for (i in seq_along(samples)) {
+    if (!is.na(tabRemove[samples[i]])) {
+      message("\t", samples[i], " : ", tabRemove[samples[i]],
+              " of ", tabAll[samples[i]], " (", round(100 *
+                                                        tabRemove[samples[i]]/tabAll[samples[i]], 1),
+              "%)")
+    }
+    else {
+      message("\t", samples[i], " : ", 0, " of ", tabAll[samples[i]],
+              " (0%)")
+    }
+  }
+  if (length(cellsFilter) > 0) {
+    #cellsKept <- rownames(metaData)[!rownames(metaData)%in%cellsFilter]
+    doubletIf<-ifelse(rownames(metaData)%in%cellsFilter,"Doublet","Singlet")
+    d<-data.frame("barcode"=rownames(metaData),"detectCell"=doubletIf,row.names = rownames(metaData))
+    return(d)
+  }
+  NULL
+}
+

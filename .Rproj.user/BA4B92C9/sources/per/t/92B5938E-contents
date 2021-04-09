@@ -1,0 +1,6 @@
+#' @title cytof config file for example
+#' @docType data
+#' @name config
+#' @keywords d dataset
+#'
+NULL
