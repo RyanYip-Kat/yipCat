@@ -88,6 +88,15 @@ example:
 ```r
 wrapperROGUE(object=seurat,auto=TRUE,labelCol="label_fine",sampleCol="sample_id")
 ```
+
+### Volcano plot for difference analysis markers
+the markers dataframe support seurat and scanpy
+```r
+data("deDF")
+seurat_df<-deDF[["seurat"]]
+p<-DAPlot(seurat_df)
+```
+![volcano](inst/extdata/vocano.png)
 For additional usage, check out the package's function description
 ### Issues using yipCat?
 If this does not fix your problem, please [report an issue on Github](https://github.com/RyanYip-Kat/yipCat/issues) with the __Bug Report__ form.
