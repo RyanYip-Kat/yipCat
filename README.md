@@ -8,7 +8,9 @@ can achieve the interaction of **cellranger cloupe files**, very convenient.
 ### Installtation
 you can install this package via command:
 ```r
-install.packages("yipCat_1.0.1.tar.gz")
+install.packages("yipCat_1.0.3.tar.gz")
+# or 
+devtools::install_github("RyanYip-Kat/yipCat")
 ```
 
 ### requirement
