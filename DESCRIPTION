@@ -35,8 +35,6 @@ Depends:
     Seurat,
     ggplot2,
     data.table,
-    flowCore,
-    DropletUtils,
     Matrix,
     magrittr,
     S4Vectors,
