@@ -8,7 +8,9 @@ can achieve the interaction of **cellranger cloupe files**, very convenient.
 ### Installtation
 you can install this package via command:
 ```r
-install.packages("yipCat_1.0.1.tar.gz")
+install.packages("yipCat_1.0.3.tar.gz")
+# or 
+devtools::install_github("RyanYip-Kat/yipCat")
 ```
 
 ### requirement
@@ -68,6 +70,7 @@ This package can realize the processing of cytof data, the cytof data is sampled
 and then processed into Seurat Object, can achieve umap, tsne, pca and other de-dimensional, cytof visualization, 
 and can be used with the impute weight method;In addition, cytof data can be interacted with cellranger to generate close files for easy cell classification by researchers
 ```r
+library(DropletUtils)
 sample_csv<-system.file("extdata", "cytofSample.csv", package = "yipCat")
 config_csv<-system.file("extdata", "cytofConfig.csv", package = "yipCat")
 seurat<-Cytof2Seurat(sample_csv=sample_csv,config_csv=config_csv,N=20000,path2barcode10X="3M-february-2018.txt")
@@ -82,6 +85,23 @@ and,can run cellrnager reanalysis via
 ```r
 generateCloupe(...)
 ```
+
+###  ROGUE (refer to https://www.jianshu.com/p/1ddf52885833)
+example:
+```r
+wrapperROGUE(object=seurat,auto=TRUE,labelCol="label_fine",sampleCol="sample_id")
+```
+
+### Volcano plot for difference analysis markers
+the markers dataframe support seurat and scanpy
+```r
+data("deDF")
+seurat_df<-deDF[["seurat"]]
+p<-DAPlot(seurat_df)
+```
+![volcano](inst/extdata/volcano.png)
+
+### had add PCR module
 For additional usage, check out the package's function description
 ### Issues using yipCat?
 If this does not fix your problem, please [report an issue on Github](https://github.com/RyanYip-Kat/yipCat/issues) with the __Bug Report__ form.
