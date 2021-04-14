@@ -29,7 +29,7 @@ Combine10XContig<-function(metaDF=NULL,
     return(contig)
   })
   message("combined contig list...")
-  if(args$class=="TCR"){
+  if(pattern=="TCR"){
     combined <- combineTCR(contig_list, samples = metaDF$Sample, ID =metaDF$Batch , cells ="T-AB")
   }else{
     combined<-combineBCR(contig_list,samples = metaDF$Sample, ID =metaDF$Batch)
