@@ -34,7 +34,8 @@ Imports:
     SummarizedExperiment
 Depends:
     Seurat,
-	flowCore,
+    flowCore,
+    scRepertoire,
     ggplot2,
     data.table,
     Matrix,
