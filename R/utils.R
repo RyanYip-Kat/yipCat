@@ -1,0 +1,381 @@
+#' a function to export embedding and cloumn to csv file
+#'
+#' @param seurat a seurat object
+#' @param cells cell barcode vector.
+#' @param exportCol column names in metadata.
+#' @param embedding reduction names in seurat object.
+#' @param outdir path to save tables
+#' @export
+exportEmbCol <- function(seurat=NULL,
+                         cells=NULL,
+                         exportCol="seurat_clusters",
+                         embedding="umap",
+                         outdir="EmbCol"){
+  #require(Seurat)
+  stopifnot(class(seurat)=="Seurat")
+  if(!is.null(cells)){
+    seurat <- subset(seurat,cells=cells)
+  }
+
+  if(!dir.exists(outdir)){
+    dir.create(outdir,recursive = TRUE,showWarnings = TRUE)
+  }
+  message("export embedding..")
+  for(emb in embedding){
+    stopifnot(emb%in%Reductions(seurat))
+    cat(sprintf("INFO :  export embedding [ %s ]\n",emb))
+    m <- as.data.frame(Embeddings(seurat,reduction = emb))
+    cellDF <- data.frame(Barcode=rownames(m),row.names=rownames(m))
+    m <- cbind(cellDF,m)
+    write.table(m,file.path(outdir,paste0(emb,"_projection.csv")),sep=",",quote=FALSE,row.names=FALSE)
+  }
+
+  message("export column..")
+  metaData <- seurat@meta.data
+  metaData$barcode <- rownames(metaData)
+  for(col in exportCol){
+    stopifnot(col%in%colnames(metaData))
+    cat(sprintf("INFO :  export column [ %s ]\n",col))
+    m <- metaData[,col,drop=FALSE]
+    m$barcode<-rownames(metaData)
+    m <- m[,c(2,1)]
+    write.table(m,file.path(outdir,paste0(col,"_DF.csv")),sep=",",quote=FALSE,row.names=FALSE)
+  }
+}
+
+
+
+
+######################
+.combn.ident<-function(idents){
+  df<-expand.grid(idents,idents)
+  idx<-apply(df,1,function(z){
+    if(z[1]==z[2]){
+      return(FALSE)
+    }else{
+      return(TRUE)
+    }
+  })
+  df<-df[idx,]
+  rownames(df)<-1:nrow(df)
+  return(t(df))
+}
+
+.Seuratinfo<-function(seurat){
+  value<-seurat
+  n<-ncol(seurat) # number of cells
+  c<-colnames(seurat) # Cells of seurat
+  g<-rownames(seurat) # Genes of seurat
+  return(list("v"=value,"n"=n,"c"=c,"g"=g))
+}
+
+
+.InteractionScore<-function(sL,sR,Lg,Rg){
+  # L : Ligand
+  # R : Receptor
+  vL<-sL[["v"]]
+  nL<-sL[["n"]]
+  Lc<-sL[["c"]]
+
+  vR<-sR[["v"]]
+  nR<-sR[["n"]]
+  Rc<-sR[["c"]]
+
+  Le<-vL[Lg,Lc]
+  Re<-vR[Rg,Rc]
+
+  p1<-sum(Le)
+  p2<-sum(Re)
+
+  I<-p1*p2/(nL*nR)
+  return(I)
+}
+
+.interScore<-function(sL,sR,interaction_csv){
+  score<-c()
+  row<-c()
+  pairs<-read.csv(interaction_csv,header=TRUE)
+  colnames(pairs)<-c("Ligand","Receptor")
+  n<-nrow(pairs)
+  ligand<-as.character(pairs$Ligand)
+  receptor<-as.character(pairs$Receptor)
+  eps<-1e-6
+
+  Lgs<-sL[["g"]]
+  Rgs<-sR[["g"]]
+  for(i in 1:n){
+    Lg=ligand[i]
+    Rg=receptor[i]
+    if(Lg%in%Lgs & Rg%in%Rgs){
+      I<-.InteractionScore(sL,sR,Lg,Rg)
+      score<-c(score,I)
+      name<-paste0(Lg,"-",Rg)
+      row<-c(row,name)
+    }
+  }
+  names(score)<-row
+  return(score)
+}
+
+#' function to caculate Interaction score
+#'
+#' @param seurat a seurat object.
+#' @param column which column in metadata as idents.
+#' @param idents which idents to be  used for scoring.
+#' @param interaction_csv csv file,include two columns, left Ligand,right Receptor
+#' @param slot slot name .
+#' @export
+CustomInteractionScore<-function(seurat=NULL,
+                                 column=NULL,
+                                 idents=NULL,
+                                 interaction_csv=NULL,
+                                 slot="data",
+                                 eps=1e-4){
+  if(length(idents)<2){
+    stop("Input idents must more than 2")
+  }
+  stopifnot(slot%in%c("counts","data","scale.data"))
+  scores<-list()
+  metaData <- seurat@meta.data
+  Idents(seurat) <- metaData[[column]]
+
+  mat<-GetAssayData(seurat,slot)
+  idents.combn<-.combn.ident(idents)
+
+  n.combn<-ncol(idents.combn)
+  for(i in 1:n.combn){
+    sL<-mat[,WhichCells(seurat,idents=idents.combn[1,i])]
+    sR<-mat[,WhichCells(seurat,idents=idents.combn[2,i])]
+    sLinfo<-.Seuratinfo(sL)
+    sRinfo<-.Seuratinfo(sR)
+
+    I1<-.interScore(sLinfo,sRinfo,interaction_csv)
+    I2<-.interScore(sRinfo,sLinfo,interaction_csv)
+
+    s<-data.frame(log2((I1+eps)/(I2+eps)))
+    colnames(s)<-paste0(idents.combn[1,i],"_",idents.combn[2,i])
+    scores[[i]]<-s
+  }
+  scores<-do.call(cbind,scores)
+  return(scores)
+}
+
+
+
+######################
+
+#' function to caculate genes in two status's differece pvalue,only support wilcox.test now
+#'
+#' @param seurat a seurat object.
+#' @param geneSet a vector of gene names.
+#' @param groupBy which column as condition(length ==2)
+#' @param slot slot name,only support counts and data
+#' @export
+getGroupPval <- function(seurat=NULL,
+                         geneSet=NULL,
+                         groupBy=NULL,
+                         slot="data"){
+  stopifnot(class(seurat)=="Seurat")
+  stopifnot(slot%in%c("counts","data"))
+  if(is.null(geneSet)){
+    geneSet <- sample(rownames(seurat),size = 10)
+  }
+  metaData <- seurat@meta.data
+  DATA <- GetAssayData(seurat,slot=slot)
+  stopifnot(groupBy%in%colnames(metaData))
+  Idents(seurat) <- metaData[[groupBy]]
+
+  groups <- as.character(unique(Idents(seurat)))
+  cb <- combn(groups,2)
+
+  Gene_Pdata <- list()
+  k <- 1
+  for(gene in geneSet){
+    cat(sprintf("INFO :  gene [ %s ] -- [ %d of %d ]\n",gene,k,length(geneSet)))
+    data<-list()
+    for(g in groups){
+      cell<-WhichCells(seurat,idents=g)
+      df<-DATA[gene,cell]
+      data[[g]]<-df
+    }
+
+    Names<-c()
+    ps<-c()
+    for(i in 1:ncol(cb)){
+      x_name <- cb[1,i]
+      y_name <- cb[2,i]
+      x <- data[[x_name]]
+      y <- data[[y_name]]
+      name <- paste0(x_name,"_",y_name)
+      pvalue <- wilcox.test(x,y)$p.value
+      ps <- c(ps,pvalue)
+      Names <- c(Names,name)
+    }
+    gene_p<-data.frame(t(ps))
+    colnames(gene_p) <- Names
+    rownames(gene_p)<-gene
+    Gene_Pdata[[k]]<-gene_p
+    k<-k+1
+  }
+
+  pDF<-do.call(rbind,Gene_Pdata)
+  return(pDF)
+}
+
+
+#' quantile cut
+#' @export
+quantileCut<-function (x = NULL, lo = 0.025, hi = 0.975, maxIf0 = TRUE)
+{
+  q <- quantile(x, probs = c(lo, hi),na.rm=TRUE)
+  if (q[2] == 0) {
+    if (maxIf0) {
+      q[2] <- max(x)
+    }
+  }
+  x[x < q[1]] <- q[1]
+  x[x > q[2]] <- q[2]
+  return(x)
+}
+
+#' whether is discrete
+#' @export
+isDiscrete<-function (x = NULL)
+{
+  is.factor(x) || is.character(x) || is.logical(x)
+}
+
+#' merge params
+#' @export
+#'
+mergeParams<-function (paramInput = NULL, paramDefault = NULL)
+{
+  for (i in seq_along(paramDefault)) {
+    if (!(names(paramDefault)[i] %in% names(paramInput))) {
+      paramInput[[names(paramDefault)[i]]] <- paramDefault[[i]]
+    }
+  }
+  return(paramInput)
+}
+.mergeParams<-mergeParams
+
+#' center mean
+#' @export
+centerRollMean<-function (v = NULL, k = NULL)
+{
+  o1 <- data.table::frollmean(v, k, align = "right", na.rm = FALSE)
+  if (k%%2 == 0) {
+    o2 <- c(rep(o1[k], floor(k/2) - 1), o1[-seq_len(k - 1)],
+            rep(o1[length(o1)], floor(k/2)))
+  }
+  else if (k%%2 == 1) {
+    o2 <- c(rep(o1[k], floor(k/2)), o1[-seq_len(k - 1)],
+            rep(o1[length(o1)], floor(k/2)))
+  }
+  else {
+    stop("Error!")
+  }
+  o2
+}
+
+
+#' function to mutiple threads
+#' @export
+.safelapply<-function (..., threads = 1, preschedule = FALSE)
+{
+  require(parallel)
+  if (tolower(.Platform$OS.type) == "windows") {
+    threads <- 1
+  }
+  if (threads > 1) {
+    o <- mclapply(..., mc.cores = threads, mc.preschedule = preschedule)
+    errorMsg <- list()
+    for (i in seq_along(o)) {
+      if (inherits(o[[i]], "try-error")) {
+        capOut <- utils::capture.output(o[[i]])
+        capOut <- capOut[!grepl("attr\\(\\,|try-error",
+                                capOut)]
+        capOut <- head(capOut, 10)
+        capOut <- unlist(lapply(capOut, function(x) substr(x,
+                                                           1, 250)))
+        capOut <- paste0("\t", capOut)
+        errorMsg[[length(errorMsg) + 1]] <- paste0(c(paste0("Error Found Iteration ",
+                                                            i, " : "), capOut), "\n")
+      }
+    }
+    if (length(errorMsg) != 0) {
+      errorMsg <- unlist(errorMsg)
+      errorMsg <- head(errorMsg, 50)
+      errorMsg[1] <- paste0("\n", errorMsg[1])
+      stop(errorMsg)
+    }
+  }
+  else {
+    o <- lapply(...)
+  }
+  o
+}
+
+#' get impute weight
+#' @export
+getImputeWeight<-function(object){
+  weight<-object@misc[["imputeWeights"]]
+  return(weight)
+}
+
+
+#' create temp file
+#' @export
+.tempfile<-function (pattern = "tmp", tmpdir = "tmp", fileext = "", addDOC = TRUE)
+{
+  dir.create(tmpdir, showWarnings = FALSE)
+  if (addDOC) {
+    doc <- paste0("-Date-", Sys.Date(), "_Time-", gsub(":",
+                                                       "-", stringr::str_split(Sys.time(), pattern = " ",
+                                                                               simplify = TRUE)[1, 2]))
+  }
+  else {
+    doc <- ""
+  }
+  tempfile(pattern = paste0(pattern, "-"), tmpdir = tmpdir,
+           fileext = paste0(doc, fileext))
+}
+
+
+#' make dir
+#' @export
+makedir<-function(path){
+  if(!dir.exists(path)){
+    dir.create(path,recursive=TRUE)
+  }
+}
+
+
+#' Convert Seurat into Anndata object
+#' @param seurat seurat object
+#' @param cells cells use to be exported
+#' @param features features use to be exported
+#' @param name prefix name for anndata file
+#' @param outdir output path to save anndata
+#' @export
+Seurat2AnnData<-function(seurat=NULL,
+                         cells=cells,
+                         features=NULL,
+                         name="seurat",
+                         outDir="anndata"){
+
+  seurat<-subset(seurat,cells=cells,features=features)
+  makedir(outDir)
+  metadata<-seurat@meta.data
+  metadata$barcode<-Cells(seurat)
+  write.table(metadata,file.path(outDir,"metadata.csv"),sep=",",quote=FALSE,row.names=FALSE)
+
+  message("INFO : SaveH5Seurat ...")
+  dest<-file.path(outDir,paste0(name,".h5Seurat"))
+  SaveH5Seurat(seurat, filename = dest)
+
+  message("INFO : Convert into h5ad ...")
+  Convert(dest, dest = "h5ad")
+  message("INFO : Done!")
+
+}

@@ -1,0 +1,62 @@
+Package: yipCat
+Type: Package
+Title: Some function like  ArchR style in Seurat Object 
+Version: 1.0.5
+Author: RyanYip
+Maintainer: The package maintainer <ryanyip_@hotmail.com>
+Description: Some useful functional tools for Seurat object,add cytof and Add style like ArchR
+License: GPL-3
+Encoding: UTF-8
+LazyData: true
+RoxygenNote: 7.1.1
+Imports:
+    SeuratWrappers,
+    tibble,
+    SeuratDisk,
+    flowCore,
+    DropletUtils,
+    scRepertoire,
+    Seurat,
+    ggplot2,
+    Rcpp,
+    matrixStats,
+    dplyr,
+    magrittr,
+    nabor,
+    S4Vectors,
+    uwot,
+    ggrepel,
+    Rsamtools,
+    gtable,
+    gtools,
+    stringr,
+    grid,
+    gridExtra,
+    ComplexHeatmap,
+    SummarizedExperiment,
+    shiny
+Depends:
+    harmony,
+    SeuratWrappers,
+    Seurat,
+    SeuratDisk,
+    flowCore,
+    ggplot2,
+    data.table,
+    Matrix,
+    magrittr,
+    S4Vectors,
+    dplyr,
+    Rcpp,
+    matrixStats,
+    nabor,
+    uwot,
+    ggrepel,
+    gtable,
+    gtools,
+    stringr,
+    grid,
+    gridExtra,
+    ComplexHeatmap,
+    SummarizedExperiment,
+    shiny
