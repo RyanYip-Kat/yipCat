@@ -98,6 +98,12 @@ p<-DAPlot(seurat_df)
 ```
 ![volcano](Plots/volcano.png)
 
+### Shiny Browser
+had add a simple Shiny app for visulization
+usege:
+```r
+setAppServer(seurat,host="your host id",port="7777",launch.browser=TRUE)
+```
 For additional usage, check out the package's function description
 ### Issues using yipCat?
 If this does not fix your problem, please [report an issue on Github](https://github.com/RyanYip-Kat/yipCat/issues) with the __Bug Report__ form.
