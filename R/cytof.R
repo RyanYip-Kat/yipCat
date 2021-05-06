@@ -68,7 +68,7 @@ Cytof2Seurat<-function(sample_csv=NULL,
   fset=list()
   for(i in 1:length(samples_DF$Path)){
     cat(sprintf("INFO : read [ %d ] fcs file\n",i))
-    fr=read.FCS(samples_DF$Path[i],which.lines=N,column.pattern=pattern,transformation =transformation)
+    fr=read.FCS(samples_DF$Path[i],which.lines=N,column.pattern=pattern,transformation =FALSE)
     column=flowCore::colnames(fr)
 
     beat=stringr::str_extract(column,"\\d+")
@@ -187,3 +187,170 @@ Cytof2Seurat<-function(sample_csv=NULL,
   return(seurat)
 }
 
+
+
+##############################
+###### function to transform cytof data into Seurat object(better method)
+##############################
+
+#' function to convert cytof data into Seurat
+#'
+#' @param sample_csv at least three columns(Path,Sample,Condition)
+#' @param config_csv at least two columns(channel(Cd111Di,Nd143Di...),marker(CD8A,CD11C..))
+#' @param N sample size,default sample 20000 each fcs file
+#' @param useFeatures feature names provide to run scaleData and runpca.
+#' @param batch_correct whether run batch correct to remove batch effect
+#' @param batch_key when remove batch correct,which key use  to run.
+#' @param path2barcode10X 10X barcode file,can be found in cellranger path
+#' @import flowCore
+#' @export
+#'
+#'
+
+CytofToSeurat<-function(sample_csv=NULL,
+                       config_csv=NULL,
+                       N=20000,
+                       useFeatures=NULL,
+                       batch_correct=FALSE,
+                       batch_key="sample",
+                       write2count=FALSE,
+                       path2barcode10X="3M-february-2018.txt",
+                       outdir="cytof"
+){
+
+  if(!dir.exists(outdir)){
+    dir.create(outdir,recursive = TRUE,showWarnings = FALSE)
+  }
+  message("read 10x barcode..")
+  barcode_df=data.table::fread(path2barcode10X,stringsAsFactors=FALSE,header=FALSE)
+  barcodes=as.character(barcode_df$V1)
+
+  message("read sample file..")
+  samples_DF=read.csv(sample_csv,stringsAsFactors=FALSE,sep=",")
+  stopifnot("Condition"%in%colnames(samples_DF))
+  stopifnot("Path"%in%colnames(samples_DF))  # fcs file
+  stopifnot("Sample"%in%colnames(samples_DF)) # fcs sample name
+  cat(sprintf("There are : %d sample fcs file\n",nrow(samples_DF)))
+
+  message("loading config file..")
+  cols=read.csv(config_csv,stringsAsFactors=FALSE,sep=",")
+  stopifnot("marker"%in%colnames(config))
+  stopifnot("channel"%in%colnames(config))
+
+
+  message("read flowSet")
+  files<-as.character(samples_DF$Path)
+  counts_list<-list()
+  for(i in seq_along(files)){
+    cat(sprintf("INFO : read [ %d ] fcs file\n",i))
+    file<-files[i]
+
+    ff<-flowCore::read.FCS(file,transformation = FALSE, truncate_max_range = FALSE)
+    data <- flowCore::exprs(ff)
+    Names<-colnames(data)
+    col_names=ifelse(str_detect(Names,"\\d+"),str_extract(Names,"\\d+"),Names)
+    colnames(data)=col_names
+
+    sample=samples_DF$Sample[i]
+    condition=samples_DF$Condition[i]
+    rowName=paste0(condition,"#",paste(sample,1:nrow(data),sep="#"))
+    barcode=sample(barcodes,size=nrow(data),replace=FALSE)
+    cells=paste(barcode,1,sep="-")
+    rowName=paste0(rowName,"#",cells)
+
+    rownames(data)=rowName
+
+    if(!is.null(cols)){
+      column<-as.character(cols$channel)
+      column<-ifelse(str_detect(column,"\\d+"),str_extract(column,"\\d+"),column)
+      antigen<-as.character(cols$marker)
+      data<-data[,column]
+      colnames(data)<-antigen
+    }
+
+    if(!is.null(N)){
+      idx<-sample(1:nrow(data),as.integer(N),replace=FALSE)
+      data<-data[idx,]
+    }
+    counts_list[[i]]<-data
+    barcodes<-setdiff(barcodes,barcode)
+  }
+
+  message("Concat dataset..")
+  exprs_matrix<-do.call(rbind,counts_list)
+  cat(sprintf("Theraa are : %s cells\n",nrow(exprs_matrix)))
+
+  Names<-rownames(exprs_matrix)
+  status<-unlist(lapply(Names,function(x){return(str_split(x,"#")[[1]][1])}))
+  samples<-unlist(lapply(Names,function(name){return(str_split(name,"#")[[1]][2])}))
+  cells<-unlist(lapply(Names,function(name){return(str_split(name,"#")[[1]][4])}))
+  rownames(exprs_matrix)=cells
+  metadata<-data.frame("cell_id"=cells,"sample"=samples,"status"=status,"condition"=status)
+  Names<-rownames(exprs_matrix)
+
+  message("Create Seurat object..")
+  seurat<-CreateSeuratObject(counts=t(exprs_matrix),
+                             project ="cytof",
+                             min.cells=0,
+                             min.features=1)
+  rownames(metadata)=Names
+  seurat<-AddMetaData(seurat,metadata)
+
+  if(is.null(useFeatures)){
+    useFeatures<-rownames(seurat)
+  }
+
+  use_rep <-"pca"
+  ndims <- 20
+
+  seurat <- NormalizeData(seurat,normalization.method = "LogNormalize",verbose = FALSE)
+  message("Run PCA")
+  seurat<-ScaleData(seurat,features=useFeatures)
+  seurat<-RunPCA(seurat,npcs=30,features=useFeatures,verbose=FALSE)
+
+  if(batch_correct){
+    require(harmony)
+    message("Run Harmony")
+    if(is.null(batch_key)){
+      batch_key<-"sample"
+    }
+    harmony_embeddings=HarmonyMatrix(exprs_matrix, metadata, batch_key) #v3
+    rownames(harmony_embeddings)<-Names
+    colnames(harmony_embeddings)<-paste("Harmony",1:ncol(harmony_embeddings),sep="_")
+
+    use_rep<-"harmony"
+    ndims<-20
+
+    message("add harmony")
+    mat<-as.matrix(harmony_embeddings)
+    colnames(mat)<-paste("Harmony_",1:ncol(mat),sep = "")
+    seurat[["harmony"]]<-CreateDimReducObject(embeddings =mat,
+                                              key = "Harmony_",
+                                              assay = DefaultAssay(seurat))
+  }
+
+  message("Run UMAP")
+  seurat <- RunUMAP(object = seurat, reduction =use_rep, dims = 1:ndims)
+  message("Run TSNE")
+  seurat <- RunTSNE(object = seurat, reduction = use_rep, dims = 1:ndims)
+  message("Run FindNeighbors")
+  seurat <- FindNeighbors(object = seurat,reduction =use_rep, dims = 1:ndims)
+
+  message("Run Find Clusters")
+  seurat <- FindClusters(object = seurat,resolution=0.8, verbose =TRUE)
+  if(write2count){
+    message("write counts matrix into 10x")
+    counts<-GetAssayData(seurat,"counts")
+    rownames(counts)=str_to_upper(rownames(counts))
+
+    filename=file.path(outdir,"filtered_feature_cytof_matrix.h5")
+    cat(sprintf("Write counts matrix into : %s\n",filename))
+    write10xCounts(x =counts, path=filename,type="HDF5")
+
+    filename=file.path(outdir,"filtered_feature_cytof_matrix")
+    cat(sprintf("Write counts matrix into : %s\n",filename))
+    write10xCounts(x =counts, path=filename)
+  }
+  return(seurat)
+
+}
